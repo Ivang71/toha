@@ -14,6 +14,7 @@
 #include <fstream>
 #include <cstring>
 #include <cmath>
+#include <cstdio>
 
 struct QueueFamilyIndices {
     std::optional<uint32_t> graphicsFamily;
@@ -143,8 +144,11 @@ private:
 
     const uint32_t WIDTH = 1280;
     const uint32_t HEIGHT = 720;
+    const uint32_t RAYMARCH_UPSCALE = 2;
     bool validationEnabled{};
     bool cursorLocked{};
+    double fpsTimeAccum{};
+    int fpsFrameCount{};
 
     void initWindow();
     void initVulkan();
@@ -232,6 +236,8 @@ void VulkanAppImpl::initVulkan() {
     createCommandPool();
     createCommandBuffers();
     createSyncObjects();
+    fpsTimeAccum = 0.0;
+    fpsFrameCount = 0;
 }
 
 void VulkanAppImpl::mainLoop() {
@@ -256,6 +262,19 @@ void VulkanAppImpl::mainLoop() {
 
         updateCamera(dt);
         updateCameraBuffer();
+
+        fpsTimeAccum += dt;
+        fpsFrameCount += 1;
+        if (fpsTimeAccum >= 0.5) {
+            double fps = static_cast<double>(fpsFrameCount) / fpsTimeAccum;
+            fpsTimeAccum = 0.0;
+            fpsFrameCount = 0;
+
+            char title[128];
+            std::snprintf(title, sizeof(title), "Voxel Engine - %.1f FPS", fps);
+            glfwSetWindowTitle(window, title);
+        }
+
         drawFrame();
     }
     vkDeviceWaitIdle(device);
@@ -1118,10 +1137,10 @@ void VulkanAppImpl::updateCamera(float dt) {
     cameraRight = vnorm(vcross(cameraForward, up));
     cameraUp = vcross(cameraRight, cameraForward);
 
-    float baseSpeed = 10.0f;
-    bool fast = glfwGetKey(window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS ||
-                glfwGetKey(window, GLFW_KEY_RIGHT_SHIFT) == GLFW_PRESS;
-    float speed = baseSpeed * (fast ? 3.0f : 1.0f);
+    float speed = 10.0f;
+    if (glfwGetKey(window, GLFW_KEY_LEFT_CONTROL) == GLFW_PRESS) {
+        speed *= 3.0f;
+    }
     float vel = speed * dt;
 
     if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS) {
@@ -1138,10 +1157,11 @@ void VulkanAppImpl::updateCamera(float dt) {
     if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS) {
         cameraPos = vadd(cameraPos, vscale(flatRight, vel));
     }
-    if (glfwGetKey(window, GLFW_KEY_E) == GLFW_PRESS) {
+    if (glfwGetKey(window, GLFW_KEY_SPACE) == GLFW_PRESS) {
         cameraPos.y += vel;
     }
-    if (glfwGetKey(window, GLFW_KEY_Q) == GLFW_PRESS) {
+    if (glfwGetKey(window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS ||
+        glfwGetKey(window, GLFW_KEY_RIGHT_SHIFT) == GLFW_PRESS) {
         cameraPos.y -= vel;
     }
 
@@ -1239,8 +1259,10 @@ void VulkanAppImpl::recordCommandBuffer(VkCommandBuffer cmd, uint32_t imageIndex
 
     const uint32_t localSizeX = 16;
     const uint32_t localSizeY = 16;
-    uint32_t groupCountX = (swapchainExtent.width + localSizeX - 1) / localSizeX;
-    uint32_t groupCountY = (swapchainExtent.height + localSizeY - 1) / localSizeY;
+    uint32_t renderWidth = swapchainExtent.width / RAYMARCH_UPSCALE;
+    uint32_t renderHeight = swapchainExtent.height / RAYMARCH_UPSCALE;
+    uint32_t groupCountX = (renderWidth + localSizeX - 1) / localSizeX;
+    uint32_t groupCountY = (renderHeight + localSizeY - 1) / localSizeY;
 
     vkCmdDispatch(cmd, groupCountX, groupCountY, 1);
 
