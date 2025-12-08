@@ -1,5 +1,6 @@
 running
 ```powershell
+$env:VOXEL_VK_DEBUG=1 # enables debug
 cd build
 ..\scripts\dev.ps1
 ```

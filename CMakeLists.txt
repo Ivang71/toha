@@ -12,6 +12,28 @@ find_package(Vulkan REQUIRED)
 
 include(FetchContent)
 
+set(SHADER_DIR ${CMAKE_SOURCE_DIR}/shaders)
+file(GLOB SHADER_SOURCES
+  ${SHADER_DIR}/*.vert
+  ${SHADER_DIR}/*.frag
+)
+
+set(COMPILED_SHADERS)
+foreach(SHADER ${SHADER_SOURCES})
+  get_filename_component(FILE_NAME ${SHADER} NAME)
+  set(SPV ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/shaders/${FILE_NAME}.spv)
+  add_custom_command(
+    OUTPUT ${SPV}
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/shaders
+    COMMAND ${Vulkan_GLSLC_EXECUTABLE} -o ${SPV} ${SHADER}
+    DEPENDS ${SHADER}
+    VERBATIM
+  )
+  list(APPEND COMPILED_SHADERS ${SPV})
+endforeach()
+
+add_custom_target(shaders ALL DEPENDS ${COMPILED_SHADERS})
+
 set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(GLFW_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(GLFW_BUILD_DOCS OFF CACHE BOOL "" FORCE)
@@ -32,6 +54,8 @@ target_link_libraries(voxel_engine PRIVATE
   Vulkan::Vulkan
   glfw
 )
+
+add_dependencies(voxel_engine shaders)
 
 if(MSVC)
   target_compile_options(voxel_engine PRIVATE /W4 /permissive-)
