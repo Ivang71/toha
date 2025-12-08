@@ -16,6 +16,7 @@ set(SHADER_DIR ${CMAKE_SOURCE_DIR}/shaders)
 file(GLOB SHADER_SOURCES
   ${SHADER_DIR}/*.vert
   ${SHADER_DIR}/*.frag
+  ${SHADER_DIR}/*.comp
 )
 
 set(COMPILED_SHADERS)
@@ -48,6 +49,13 @@ FetchContent_MakeAvailable(glfw)
 
 add_executable(voxel_engine
   src/main.cpp
+  src/core/logging.cpp
+  src/render/vulkan/vulkan_debug.cpp
+  src/render/vulkan/vulkan_app.cpp
+)
+
+target_include_directories(voxel_engine PRIVATE
+  ${CMAKE_SOURCE_DIR}/src
 )
 
 target_link_libraries(voxel_engine PRIVATE
