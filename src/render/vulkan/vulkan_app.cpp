@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <fstream>
 #include <cstring>
+#include <cmath>
 
 struct QueueFamilyIndices {
     std::optional<uint32_t> graphicsFamily;
@@ -30,6 +31,55 @@ struct Vertex {
     float pos[2];
     float color[3];
 };
+
+struct Vec3 {
+    float x;
+    float y;
+    float z;
+};
+
+struct CameraUBO {
+    float camPos[4];
+    float camForward[4];
+    float camRight[4];
+    float camUp[4];
+    float params[4];
+};
+
+static Vec3 vadd(Vec3 a, Vec3 b) {
+    return {a.x + b.x, a.y + b.y, a.z + b.z};
+}
+
+static Vec3 vsub(Vec3 a, Vec3 b) {
+    return {a.x - b.x, a.y - b.y, a.z - b.z};
+}
+
+static Vec3 vscale(Vec3 a, float s) {
+    return {a.x * s, a.y * s, a.z * s};
+}
+
+static float vdot(Vec3 a, Vec3 b) {
+    return a.x * b.x + a.y * b.y + a.z * b.z;
+}
+
+static Vec3 vcross(Vec3 a, Vec3 b) {
+    return {
+        a.y * b.z - a.z * b.y,
+        a.z * b.x - a.x * b.z,
+        a.x * b.y - a.y * b.x
+    };
+}
+
+static float vlen(Vec3 a) {
+    return std::sqrt(vdot(a, a));
+}
+
+static Vec3 vnorm(Vec3 a) {
+    float len = vlen(a);
+    if (len <= 0.0f) return {0.0f, 0.0f, 0.0f};
+    float inv = 1.0f / len;
+    return {a.x * inv, a.y * inv, a.z * inv};
+}
 
 class VulkanAppImpl {
 public:
@@ -75,11 +125,26 @@ private:
     VkBuffer vertexBuffer{};
     VkDeviceMemory vertexBufferMemory{};
 
+    VkBuffer cameraBuffer{};
+    VkDeviceMemory cameraBufferMemory{};
+    CameraUBO cameraData{};
+    Vec3 cameraPos{};
+    Vec3 lastLoggedCameraPos{};
+    Vec3 cameraForward{};
+    Vec3 cameraRight{};
+    Vec3 cameraUp{};
+    float cameraYaw{};
+    float cameraPitch{};
+    bool firstMouse{};
+    double lastMouseX{};
+    double lastMouseY{};
+
     std::vector<bool> imageLayoutInitialized;
 
     const uint32_t WIDTH = 1280;
     const uint32_t HEIGHT = 720;
     bool validationEnabled{};
+    bool cursorLocked{};
 
     void initWindow();
     void initVulkan();
@@ -116,6 +181,10 @@ private:
     void createSyncObjects();
     void recordCommandBuffer(VkCommandBuffer cmd, uint32_t imageIndex);
     void drawFrame();
+    void createCameraBuffer();
+    void initCamera();
+    void updateCamera(float dt);
+    void updateCameraBuffer();
 };
 
 VulkanApp::VulkanApp(bool enableValidation)
@@ -135,6 +204,8 @@ void VulkanAppImpl::initWindow() {
     glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);
     window = glfwCreateWindow(static_cast<int>(WIDTH), static_cast<int>(HEIGHT), "Voxel Engine", nullptr, nullptr);
     if (!window) throw std::runtime_error("Failed to create GLFW window");
+    glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+    cursorLocked = true;
 }
 
 void VulkanAppImpl::initVulkan() {
@@ -151,6 +222,8 @@ void VulkanAppImpl::initVulkan() {
     createComputeDescriptorSetLayout();
     createComputePipeline();
     createComputeDescriptorPool();
+    createCameraBuffer();
+    initCamera();
     createComputeDescriptorSets();
     createRenderPass();
     createGraphicsPipeline();
@@ -162,8 +235,27 @@ void VulkanAppImpl::initVulkan() {
 }
 
 void VulkanAppImpl::mainLoop() {
+    double lastTime = glfwGetTime();
     while (!glfwWindowShouldClose(window)) {
+        double now = glfwGetTime();
+        float dt = static_cast<float>(now - lastTime);
+        lastTime = now;
         glfwPollEvents();
+
+        if (cursorLocked && glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) {
+            glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
+            cursorLocked = false;
+        }
+        if (!cursorLocked &&
+            glfwGetWindowAttrib(window, GLFW_FOCUSED) == GLFW_TRUE &&
+            glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS) {
+            glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+            cursorLocked = true;
+            firstMouse = true;
+        }
+
+        updateCamera(dt);
+        updateCameraBuffer();
         drawFrame();
     }
     vkDeviceWaitIdle(device);
@@ -175,6 +267,9 @@ void VulkanAppImpl::cleanup() {
     vkDestroyFence(device, inFlightFence, nullptr);
     vkDestroySemaphore(device, renderFinishedSemaphore, nullptr);
     vkDestroySemaphore(device, imageAvailableSemaphore, nullptr);
+
+    vkDestroyBuffer(device, cameraBuffer, nullptr);
+    vkFreeMemory(device, cameraBufferMemory, nullptr);
 
     vkDestroyBuffer(device, vertexBuffer, nullptr);
     vkFreeMemory(device, vertexBufferMemory, nullptr);
@@ -705,16 +800,21 @@ void VulkanAppImpl::createGraphicsPipeline() {
 }
 
 void VulkanAppImpl::createComputeDescriptorSetLayout() {
-    VkDescriptorSetLayoutBinding binding{};
-    binding.binding = 0;
-    binding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-    binding.descriptorCount = 1;
-    binding.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    VkDescriptorSetLayoutBinding bindings[2]{};
+    bindings[0].binding = 0;
+    bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    bindings[0].descriptorCount = 1;
+    bindings[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+
+    bindings[1].binding = 1;
+    bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    bindings[1].descriptorCount = 1;
+    bindings[1].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
 
     VkDescriptorSetLayoutCreateInfo info{};
     info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    info.bindingCount = 1;
-    info.pBindings = &binding;
+    info.bindingCount = 2;
+    info.pBindings = bindings;
 
     if (vkCreateDescriptorSetLayout(device, &info, nullptr, &computeDescriptorSetLayout) != VK_SUCCESS) {
         throw std::runtime_error("Failed to create compute descriptor set layout");
@@ -757,15 +857,17 @@ void VulkanAppImpl::createComputePipeline() {
 void VulkanAppImpl::createComputeDescriptorPool() {
     uint32_t count = static_cast<uint32_t>(swapchainImages.size());
 
-    VkDescriptorPoolSize poolSize{};
-    poolSize.type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-    poolSize.descriptorCount = count;
+    VkDescriptorPoolSize poolSizes[2]{};
+    poolSizes[0].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    poolSizes[0].descriptorCount = count;
+    poolSizes[1].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    poolSizes[1].descriptorCount = count;
 
     VkDescriptorPoolCreateInfo poolInfo{};
     poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
     poolInfo.maxSets = count;
-    poolInfo.poolSizeCount = 1;
-    poolInfo.pPoolSizes = &poolSize;
+    poolInfo.poolSizeCount = 2;
+    poolInfo.pPoolSizes = poolSizes;
 
     if (vkCreateDescriptorPool(device, &poolInfo, nullptr, &computeDescriptorPool) != VK_SUCCESS) {
         throw std::runtime_error("Failed to create compute descriptor pool");
@@ -792,16 +894,55 @@ void VulkanAppImpl::createComputeDescriptorSets() {
         imageInfo.imageView = swapchainImageViews[i];
         imageInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
 
-        VkWriteDescriptorSet write{};
-        write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        write.dstSet = computeDescriptorSets[i];
-        write.dstBinding = 0;
-        write.descriptorCount = 1;
-        write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-        write.pImageInfo = &imageInfo;
+        VkDescriptorBufferInfo bufferInfo{};
+        bufferInfo.buffer = cameraBuffer;
+        bufferInfo.offset = 0;
+        bufferInfo.range = sizeof(CameraUBO);
 
-        vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
+        VkWriteDescriptorSet writes[2]{};
+        writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[0].dstSet = computeDescriptorSets[i];
+        writes[0].dstBinding = 0;
+        writes[0].descriptorCount = 1;
+        writes[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        writes[0].pImageInfo = &imageInfo;
+
+        writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[1].dstSet = computeDescriptorSets[i];
+        writes[1].dstBinding = 1;
+        writes[1].descriptorCount = 1;
+        writes[1].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        writes[1].pBufferInfo = &bufferInfo;
+
+        vkUpdateDescriptorSets(device, 2, writes, 0, nullptr);
     }
+}
+
+void VulkanAppImpl::createCameraBuffer() {
+    VkBufferCreateInfo info{};
+    info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    info.size = sizeof(CameraUBO);
+    info.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+    info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+    if (vkCreateBuffer(device, &info, nullptr, &cameraBuffer) != VK_SUCCESS) {
+        throw std::runtime_error("Failed to create camera buffer");
+    }
+
+    VkMemoryRequirements req{};
+    vkGetBufferMemoryRequirements(device, cameraBuffer, &req);
+
+    VkMemoryAllocateInfo alloc{};
+    alloc.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    alloc.allocationSize = req.size;
+    alloc.memoryTypeIndex = findMemoryType(req.memoryTypeBits,
+                                           VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+
+    if (vkAllocateMemory(device, &alloc, nullptr, &cameraBufferMemory) != VK_SUCCESS) {
+        throw std::runtime_error("Failed to allocate camera buffer memory");
+    }
+
+    vkBindBufferMemory(device, cameraBuffer, cameraBufferMemory, 0);
 }
 
 void VulkanAppImpl::createVertexBuffer() {
@@ -901,6 +1042,140 @@ void VulkanAppImpl::createCommandBuffers() {
     if (vkAllocateCommandBuffers(device, &allocInfo, commandBuffers.data()) != VK_SUCCESS) {
         throw std::runtime_error("Failed to allocate command buffers");
     }
+}
+
+void VulkanAppImpl::initCamera() {
+    cameraPos = {0.0f, 10.0f, 20.0f};
+    lastLoggedCameraPos = cameraPos;
+    cameraYaw = 0.0f;
+    cameraPitch = -0.5f;
+    firstMouse = true;
+    cameraForward = vnorm({std::cos(cameraPitch) * std::cos(cameraYaw),
+                           std::sin(cameraPitch),
+                           std::cos(cameraPitch) * std::sin(cameraYaw)});
+    Vec3 up = {0.0f, 1.0f, 0.0f};
+    cameraRight = vnorm(vcross(cameraForward, up));
+    cameraUp = vcross(cameraRight, cameraForward);
+
+    float fov = 1.0471976f;
+    float aspect = static_cast<float>(swapchainExtent.width) / static_cast<float>(swapchainExtent.height);
+    float sliceY = 0.0f;
+
+    cameraData.camPos[0] = cameraPos.x;
+    cameraData.camPos[1] = cameraPos.y;
+    cameraData.camPos[2] = cameraPos.z;
+    cameraData.camPos[3] = 1.0f;
+
+    cameraData.camForward[0] = cameraForward.x;
+    cameraData.camForward[1] = cameraForward.y;
+    cameraData.camForward[2] = cameraForward.z;
+    cameraData.camForward[3] = 0.0f;
+
+    cameraData.camRight[0] = cameraRight.x;
+    cameraData.camRight[1] = cameraRight.y;
+    cameraData.camRight[2] = cameraRight.z;
+    cameraData.camRight[3] = 0.0f;
+
+    cameraData.camUp[0] = cameraUp.x;
+    cameraData.camUp[1] = cameraUp.y;
+    cameraData.camUp[2] = cameraUp.z;
+    cameraData.camUp[3] = 0.0f;
+
+    cameraData.params[0] = fov;
+    cameraData.params[1] = aspect;
+    cameraData.params[2] = sliceY;
+    cameraData.params[3] = 0.0f;
+
+    updateCameraBuffer();
+}
+
+void VulkanAppImpl::updateCamera(float dt) {
+    if (dt <= 0.0f) dt = 0.016f;
+
+    double x, y;
+    glfwGetCursorPos(window, &x, &y);
+    if (firstMouse) {
+        lastMouseX = x;
+        lastMouseY = y;
+        firstMouse = false;
+    }
+    double dx = x - lastMouseX;
+    double dy = y - lastMouseY;
+    lastMouseX = x;
+    lastMouseY = y;
+
+    float sensitivity = 0.002f;
+    cameraYaw -= static_cast<float>(dx) * sensitivity;
+    cameraPitch -= static_cast<float>(dy) * sensitivity;
+    const float limit = 1.55334f;
+    if (cameraPitch > limit) cameraPitch = limit;
+    if (cameraPitch < -limit) cameraPitch = -limit;
+
+    cameraForward = vnorm({std::cos(cameraPitch) * std::cos(cameraYaw),
+                           std::sin(cameraPitch),
+                           std::cos(cameraPitch) * std::sin(cameraYaw)});
+    Vec3 up = {0.0f, 1.0f, 0.0f};
+    cameraRight = vnorm(vcross(cameraForward, up));
+    cameraUp = vcross(cameraRight, cameraForward);
+
+    float baseSpeed = 10.0f;
+    bool fast = glfwGetKey(window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS ||
+                glfwGetKey(window, GLFW_KEY_RIGHT_SHIFT) == GLFW_PRESS;
+    float speed = baseSpeed * (fast ? 3.0f : 1.0f);
+    float vel = speed * dt;
+
+    if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS) {
+        cameraPos = vadd(cameraPos, vscale(cameraForward, vel));
+    }
+    if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS) {
+        cameraPos = vsub(cameraPos, vscale(cameraForward, vel));
+    }
+    Vec3 flatRight = {cameraRight.x, 0.0f, cameraRight.z};
+    flatRight = vnorm(flatRight);
+    if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS) {
+        cameraPos = vsub(cameraPos, vscale(flatRight, vel));
+    }
+    if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS) {
+        cameraPos = vadd(cameraPos, vscale(flatRight, vel));
+    }
+    if (glfwGetKey(window, GLFW_KEY_E) == GLFW_PRESS) {
+        cameraPos.y += vel;
+    }
+    if (glfwGetKey(window, GLFW_KEY_Q) == GLFW_PRESS) {
+        cameraPos.y -= vel;
+    }
+
+    Vec3 delta = vsub(cameraPos, lastLoggedCameraPos);
+    if (vlen(delta) > 0.01f) {
+        lastLoggedCameraPos = cameraPos;
+        std::lock_guard<std::mutex> lock(gLogMutex);
+    }
+}
+
+void VulkanAppImpl::updateCameraBuffer() {
+    cameraData.camPos[0] = cameraPos.x;
+    cameraData.camPos[1] = cameraPos.y;
+    cameraData.camPos[2] = cameraPos.z;
+
+    cameraData.camForward[0] = cameraForward.x;
+    cameraData.camForward[1] = cameraForward.y;
+    cameraData.camForward[2] = cameraForward.z;
+
+    cameraData.camRight[0] = cameraRight.x;
+    cameraData.camRight[1] = cameraRight.y;
+    cameraData.camRight[2] = cameraRight.z;
+
+    cameraData.camUp[0] = cameraUp.x;
+    cameraData.camUp[1] = cameraUp.y;
+    cameraData.camUp[2] = cameraUp.z;
+
+    float aspect = static_cast<float>(swapchainExtent.width) / static_cast<float>(swapchainExtent.height);
+    cameraData.params[1] = aspect;
+
+    void* data = nullptr;
+    vkMapMemory(device, cameraBufferMemory, 0, sizeof(CameraUBO), 0, &data);
+    std::memcpy(data, &cameraData, sizeof(CameraUBO));
+    vkUnmapMemory(device, cameraBufferMemory);
 }
 
 void VulkanAppImpl::createSyncObjects() {

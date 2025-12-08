@@ -4,28 +4,98 @@ layout(local_size_x = 16, local_size_y = 16) in;
 
 layout(binding = 0, rgba8) uniform writeonly image2D destImage;
 
+layout(std140, binding = 1) uniform Camera {
+    vec4 camPos;
+    vec4 camForward;
+    vec4 camRight;
+    vec4 camUp;
+    vec4 params;
+} camera;
+
+float fractalNoise3D(vec3 p) {
+    float v = 0.0;
+    float amp = 0.5;
+    vec2 q = p.xz * 0.05;
+    mat2 m = mat2(1.6, 1.2, -1.2, 1.6);
+    for (int i = 0; i < 5; ++i) {
+        v += amp * (sin(q.x) * cos(q.y));
+        q = m * q;
+        amp *= 0.5;
+    }
+    return v;
+}
+
+float baseWorldSDF(vec3 p) {
+    float plane = p.y;
+    float terrain = fractalNoise3D(p) * 10.0;
+    return plane - terrain;
+}
+
 void main() {
     ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
     ivec2 size = imageSize(destImage);
     if (pixel.x >= size.x || pixel.y >= size.y) return;
 
-    vec2 uv = (vec2(pixel) / vec2(size) - 0.5) * 3.0;
-    uv.x *= float(size.x) / float(size.y);
+    vec2 uv = (vec2(pixel) + 0.5) / vec2(size) * 2.0 - 1.0;
 
-    vec2 c = uv;
-    vec2 z = vec2(0.0);
+    float fov = camera.params.x;
+    if (fov <= 0.0) fov = 1.0471976;
+    float aspect = camera.params.y;
+    if (aspect <= 0.0) aspect = float(size.x) / float(size.y);
+    float tanHalfFov = tan(0.5 * fov);
+    uv.x *= aspect;
 
-    int maxIter = 128;
-    int i = 0;
-    for (; i < maxIter; ++i) {
-        float x = z.x * z.x - z.y * z.y + c.x;
-        float y = 2.0 * z.x * z.y + c.y;
-        z = vec2(x, y);
-        if (dot(z, z) > 4.0) break;
+    vec3 f = camera.camForward.xyz;
+    float lf = length(f);
+    if (lf < 1e-4) f = normalize(vec3(0.0, -0.3, -1.0));
+    else f /= lf;
+
+    vec3 r = camera.camRight.xyz;
+    float lr = length(r);
+    if (lr < 1e-4) r = normalize(cross(f, vec3(0.0, 1.0, 0.0)));
+    else r /= lr;
+
+    vec3 u = camera.camUp.xyz;
+    float lu = length(u);
+    if (lu < 1e-4) u = normalize(cross(r, f));
+    else u /= lu;
+
+    r = -r;
+    u = -u;
+
+    vec3 camPos = camera.camPos.xyz;
+
+    vec3 rayDir = normalize(f + uv.x * tanHalfFov * r + uv.y * tanHalfFov * u);
+
+    float t = 0.0;
+    const float MAX_DIST = 200.0;
+    const int MAX_STEPS = 128;
+    const float HIT_EPS = 0.05;
+    bool hit = false;
+    vec3 p = camPos;
+
+    for (int i = 0; i < MAX_STEPS; ++i) {
+        p = camPos + rayDir * t;
+        float d = baseWorldSDF(p);
+        if (abs(d) < HIT_EPS) {
+            hit = true;
+            break;
+        }
+        t += max(d, 0.02);
+        if (t > MAX_DIST) {
+            break;
+        }
     }
 
-    float t = float(i) / float(maxIter);
-    vec3 color = vec3(t, t * t, pow(t, 0.5));
+    vec3 bg = vec3(0.1) + 0.4 * vec3(uv.y * 0.5 + 0.5);
+    vec3 color = bg;
+
+    if (hit) {
+        float depth = t / MAX_DIST;
+        float shade = 1.0 - depth;
+        color = vec3(shade);
+    }
+
     imageStore(destImage, pixel, vec4(color, 1.0));
 }
 
