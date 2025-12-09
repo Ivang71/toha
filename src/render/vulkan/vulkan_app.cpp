@@ -28,11 +28,6 @@ struct SwapchainSupportDetails {
     std::vector<VkPresentModeKHR> presentModes;
 };
 
-struct Vertex {
-    float pos[2];
-    float color[3];
-};
-
 struct Vec3 {
     float x;
     float y;
@@ -108,23 +103,16 @@ private:
     VkFormat swapchainImageFormat{};
     VkExtent2D swapchainExtent{};
     std::vector<VkImageView> swapchainImageViews;
-    VkRenderPass renderPass{};
-    VkPipelineLayout pipelineLayout{};
-    VkPipeline graphicsPipeline{};
     VkPipelineLayout computePipelineLayout{};
     VkPipeline computePipeline{};
     VkDescriptorSetLayout computeDescriptorSetLayout{};
     VkDescriptorPool computeDescriptorPool{};
     std::vector<VkDescriptorSet> computeDescriptorSets;
-    std::vector<VkFramebuffer> swapchainFramebuffers;
     VkCommandPool commandPool{};
     std::vector<VkCommandBuffer> commandBuffers;
     VkSemaphore imageAvailableSemaphore{};
     VkSemaphore renderFinishedSemaphore{};
     VkFence inFlightFence{};
-
-    VkBuffer vertexBuffer{};
-    VkDeviceMemory vertexBufferMemory{};
 
     VkBuffer cameraBuffer{};
     VkDeviceMemory cameraBufferMemory{};
@@ -144,7 +132,7 @@ private:
 
     const uint32_t WIDTH = 1280;
     const uint32_t HEIGHT = 720;
-    const uint32_t RAYMARCH_UPSCALE = 2;
+    const uint32_t RAYMARCH_UPSCALE = 1;
     bool validationEnabled{};
     bool cursorLocked{};
     double fpsTimeAccum{};
@@ -169,17 +157,13 @@ private:
     VkExtent2D chooseSwapExtent(const VkSurfaceCapabilitiesKHR& capabilities);
     void createSwapchain();
     void createImageViews();
-    void createRenderPass();
     static std::vector<char> readFile(const char* filename);
     VkShaderModule createShaderModule(const std::vector<char>& code);
-    void createGraphicsPipeline();
     void createComputeDescriptorSetLayout();
     void createComputePipeline();
     void createComputeDescriptorPool();
     void createComputeDescriptorSets();
-    void createVertexBuffer();
     uint32_t findMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags properties);
-    void createFramebuffers();
     void createCommandPool();
     void createCommandBuffers();
     void createSyncObjects();
@@ -229,10 +213,6 @@ void VulkanAppImpl::initVulkan() {
     createCameraBuffer();
     initCamera();
     createComputeDescriptorSets();
-    createRenderPass();
-    createGraphicsPipeline();
-    createVertexBuffer();
-    createFramebuffers();
     createCommandPool();
     createCommandBuffers();
     createSyncObjects();
@@ -260,8 +240,10 @@ void VulkanAppImpl::mainLoop() {
             firstMouse = true;
         }
 
-        updateCamera(dt);
-        updateCameraBuffer();
+        if (cursorLocked) {
+            updateCamera(dt);
+            updateCameraBuffer();
+        }
 
         fpsTimeAccum += dt;
         fpsFrameCount += 1;
@@ -290,18 +272,10 @@ void VulkanAppImpl::cleanup() {
     vkDestroyBuffer(device, cameraBuffer, nullptr);
     vkFreeMemory(device, cameraBufferMemory, nullptr);
 
-    vkDestroyBuffer(device, vertexBuffer, nullptr);
-    vkFreeMemory(device, vertexBufferMemory, nullptr);
-
-    vkDestroyPipeline(device, graphicsPipeline, nullptr);
-    vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
     vkDestroyPipeline(device, computePipeline, nullptr);
     vkDestroyPipelineLayout(device, computePipelineLayout, nullptr);
     vkDestroyDescriptorPool(device, computeDescriptorPool, nullptr);
     vkDestroyDescriptorSetLayout(device, computeDescriptorSetLayout, nullptr);
-
-    for (auto fb : swapchainFramebuffers) vkDestroyFramebuffer(device, fb, nullptr);
-    vkDestroyRenderPass(device, renderPass, nullptr);
 
     for (auto view : swapchainImageViews) vkDestroyImageView(device, view, nullptr);
 
@@ -624,48 +598,6 @@ void VulkanAppImpl::createImageViews() {
     }
 }
 
-void VulkanAppImpl::createRenderPass() {
-    VkAttachmentDescription colorAttachment{};
-    colorAttachment.format = swapchainImageFormat;
-    colorAttachment.samples = VK_SAMPLE_COUNT_1_BIT;
-    colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-    colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-    colorAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-    colorAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-    colorAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    colorAttachment.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
-
-    VkAttachmentReference colorAttachmentRef{};
-    colorAttachmentRef.attachment = 0;
-    colorAttachmentRef.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-
-    VkSubpassDescription subpass{};
-    subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
-    subpass.colorAttachmentCount = 1;
-    subpass.pColorAttachments = &colorAttachmentRef;
-
-    VkSubpassDependency dependency{};
-    dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
-    dependency.dstSubpass = 0;
-    dependency.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-    dependency.srcAccessMask = 0;
-    dependency.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-    dependency.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-
-    VkRenderPassCreateInfo renderPassInfo{};
-    renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
-    renderPassInfo.attachmentCount = 1;
-    renderPassInfo.pAttachments = &colorAttachment;
-    renderPassInfo.subpassCount = 1;
-    renderPassInfo.pSubpasses = &subpass;
-    renderPassInfo.dependencyCount = 1;
-    renderPassInfo.pDependencies = &dependency;
-
-    if (vkCreateRenderPass(device, &renderPassInfo, nullptr, &renderPass) != VK_SUCCESS) {
-        throw std::runtime_error("Failed to create render pass");
-    }
-}
-
 std::vector<char> VulkanAppImpl::readFile(const char* filename) {
     std::ifstream file(filename, std::ios::ate | std::ios::binary);
     if (!file) throw std::runtime_error("Failed to open file");
@@ -687,135 +619,6 @@ VkShaderModule VulkanAppImpl::createShaderModule(const std::vector<char>& code) 
         throw std::runtime_error("Failed to create shader module");
     }
     return shaderModule;
-}
-
-void VulkanAppImpl::createGraphicsPipeline() {
-    auto vertCode = readFile("shaders/triangle.vert.spv");
-    auto fragCode = readFile("shaders/triangle.frag.spv");
-
-    VkShaderModule vertShaderModule = createShaderModule(vertCode);
-    VkShaderModule fragShaderModule = createShaderModule(fragCode);
-
-    VkPipelineShaderStageCreateInfo vertShaderStageInfo{};
-    vertShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    vertShaderStageInfo.stage = VK_SHADER_STAGE_VERTEX_BIT;
-    vertShaderStageInfo.module = vertShaderModule;
-    vertShaderStageInfo.pName = "main";
-
-    VkPipelineShaderStageCreateInfo fragShaderStageInfo{};
-    fragShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    fragShaderStageInfo.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-    fragShaderStageInfo.module = fragShaderModule;
-    fragShaderStageInfo.pName = "main";
-
-    VkPipelineShaderStageCreateInfo shaderStages[] = { vertShaderStageInfo, fragShaderStageInfo };
-
-    VkVertexInputBindingDescription binding{};
-    binding.binding = 0;
-    binding.stride = sizeof(Vertex);
-    binding.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
-
-    VkVertexInputAttributeDescription attributes[2]{};
-    attributes[0].binding = 0;
-    attributes[0].location = 0;
-    attributes[0].format = VK_FORMAT_R32G32_SFLOAT;
-    attributes[0].offset = offsetof(Vertex, pos);
-    attributes[1].binding = 0;
-    attributes[1].location = 1;
-    attributes[1].format = VK_FORMAT_R32G32B32_SFLOAT;
-    attributes[1].offset = offsetof(Vertex, color);
-
-    VkPipelineVertexInputStateCreateInfo vertexInputInfo{};
-    vertexInputInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
-    vertexInputInfo.vertexBindingDescriptionCount = 1;
-    vertexInputInfo.pVertexBindingDescriptions = &binding;
-    vertexInputInfo.vertexAttributeDescriptionCount = 2;
-    vertexInputInfo.pVertexAttributeDescriptions = attributes;
-
-    VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
-    inputAssembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
-    inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
-    inputAssembly.primitiveRestartEnable = VK_FALSE;
-
-    VkViewport viewport{};
-    viewport.x = 0.0f;
-    viewport.y = 0.0f;
-    viewport.width = static_cast<float>(swapchainExtent.width);
-    viewport.height = static_cast<float>(swapchainExtent.height);
-    viewport.minDepth = 0.0f;
-    viewport.maxDepth = 1.0f;
-
-    VkRect2D scissor{};
-    scissor.offset = {0, 0};
-    scissor.extent = swapchainExtent;
-
-    VkPipelineViewportStateCreateInfo viewportState{};
-    viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
-    viewportState.viewportCount = 1;
-    viewportState.pViewports = &viewport;
-    viewportState.scissorCount = 1;
-    viewportState.pScissors = &scissor;
-
-    VkPipelineRasterizationStateCreateInfo rasterizer{};
-    rasterizer.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
-    rasterizer.depthClampEnable = VK_FALSE;
-    rasterizer.rasterizerDiscardEnable = VK_FALSE;
-    rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
-    rasterizer.lineWidth = 1.0f;
-    rasterizer.cullMode = VK_CULL_MODE_NONE;
-    rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
-    rasterizer.depthBiasEnable = VK_FALSE;
-
-    VkPipelineMultisampleStateCreateInfo multisampling{};
-    multisampling.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
-    multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
-    multisampling.sampleShadingEnable = VK_FALSE;
-
-    VkPipelineColorBlendAttachmentState colorBlendAttachment{};
-    colorBlendAttachment.colorWriteMask =
-        VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
-        VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
-    colorBlendAttachment.blendEnable = VK_FALSE;
-
-    VkPipelineColorBlendStateCreateInfo colorBlending{};
-    colorBlending.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
-    colorBlending.logicOpEnable = VK_FALSE;
-    colorBlending.attachmentCount = 1;
-    colorBlending.pAttachments = &colorBlendAttachment;
-
-    VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
-    pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-
-    if (vkCreatePipelineLayout(device, &pipelineLayoutInfo, nullptr, &pipelineLayout) != VK_SUCCESS) {
-        vkDestroyShaderModule(device, fragShaderModule, nullptr);
-        vkDestroyShaderModule(device, vertShaderModule, nullptr);
-        throw std::runtime_error("Failed to create pipeline layout");
-    }
-
-    VkGraphicsPipelineCreateInfo pipelineInfo{};
-    pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
-    pipelineInfo.stageCount = 2;
-    pipelineInfo.pStages = shaderStages;
-    pipelineInfo.pVertexInputState = &vertexInputInfo;
-    pipelineInfo.pInputAssemblyState = &inputAssembly;
-    pipelineInfo.pViewportState = &viewportState;
-    pipelineInfo.pRasterizationState = &rasterizer;
-    pipelineInfo.pMultisampleState = &multisampling;
-    pipelineInfo.pDepthStencilState = nullptr;
-    pipelineInfo.pColorBlendState = &colorBlending;
-    pipelineInfo.pDynamicState = nullptr;
-    pipelineInfo.layout = pipelineLayout;
-    pipelineInfo.renderPass = renderPass;
-    pipelineInfo.subpass = 0;
-
-    if (vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &graphicsPipeline) != VK_SUCCESS) {
-        vkDestroyShaderModule(device, fragShaderModule, nullptr);
-        vkDestroyShaderModule(device, vertShaderModule, nullptr);
-        throw std::runtime_error("Failed to create graphics pipeline");
-    }
-
-    vkDestroyShaderModule(device, fragShaderModule, nullptr);
-    vkDestroyShaderModule(device, vertShaderModule, nullptr);
 }
 
 void VulkanAppImpl::createComputeDescriptorSetLayout() {
@@ -841,7 +644,7 @@ void VulkanAppImpl::createComputeDescriptorSetLayout() {
 }
 
 void VulkanAppImpl::createComputePipeline() {
-    auto compCode = readFile("shaders/mandelbrot.comp.spv");
+    auto compCode = readFile("shaders/cube.comp.spv");
     VkShaderModule compModule = createShaderModule(compCode);
 
     VkPipelineShaderStageCreateInfo stageInfo{};
@@ -964,44 +767,6 @@ void VulkanAppImpl::createCameraBuffer() {
     vkBindBufferMemory(device, cameraBuffer, cameraBufferMemory, 0);
 }
 
-void VulkanAppImpl::createVertexBuffer() {
-    Vertex vertices[3] = {
-        {{0.0f, -0.5f}, {1.0f, 0.0f, 0.0f}},
-        {{0.5f, 0.5f}, {0.0f, 1.0f, 0.0f}},
-        {{-0.5f, 0.5f}, {0.0f, 0.0f, 1.0f}}
-    };
-
-    VkBufferCreateInfo bufferInfo{};
-    bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-    bufferInfo.size = sizeof(vertices);
-    bufferInfo.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
-    bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-
-    if (vkCreateBuffer(device, &bufferInfo, nullptr, &vertexBuffer) != VK_SUCCESS) {
-        throw std::runtime_error("Failed to create vertex buffer");
-    }
-
-    VkMemoryRequirements memRequirements;
-    vkGetBufferMemoryRequirements(device, vertexBuffer, &memRequirements);
-
-    VkMemoryAllocateInfo allocInfo{};
-    allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-    allocInfo.allocationSize = memRequirements.size;
-    allocInfo.memoryTypeIndex = findMemoryType(memRequirements.memoryTypeBits,
-                                               VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-
-    if (vkAllocateMemory(device, &allocInfo, nullptr, &vertexBufferMemory) != VK_SUCCESS) {
-        throw std::runtime_error("Failed to allocate vertex buffer memory");
-    }
-
-    vkBindBufferMemory(device, vertexBuffer, vertexBufferMemory, 0);
-
-    void* data;
-    vkMapMemory(device, vertexBufferMemory, 0, bufferInfo.size, 0, &data);
-    std::memcpy(data, vertices, sizeof(vertices));
-    vkUnmapMemory(device, vertexBufferMemory);
-}
-
 uint32_t VulkanAppImpl::findMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags properties) {
     VkPhysicalDeviceMemoryProperties memProperties;
     vkGetPhysicalDeviceMemoryProperties(physicalDevice, &memProperties);
@@ -1013,27 +778,6 @@ uint32_t VulkanAppImpl::findMemoryType(uint32_t typeFilter, VkMemoryPropertyFlag
         }
     }
     throw std::runtime_error("Failed to find suitable memory type");
-}
-
-void VulkanAppImpl::createFramebuffers() {
-    swapchainFramebuffers.resize(swapchainImageViews.size());
-
-    for (size_t i = 0; i < swapchainImageViews.size(); i++) {
-        VkImageView attachments[] = { swapchainImageViews[i] };
-
-        VkFramebufferCreateInfo framebufferInfo{};
-        framebufferInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
-        framebufferInfo.renderPass = renderPass;
-        framebufferInfo.attachmentCount = 1;
-        framebufferInfo.pAttachments = attachments;
-        framebufferInfo.width = swapchainExtent.width;
-        framebufferInfo.height = swapchainExtent.height;
-        framebufferInfo.layers = 1;
-
-        if (vkCreateFramebuffer(device, &framebufferInfo, nullptr, &swapchainFramebuffers[i]) != VK_SUCCESS) {
-            throw std::runtime_error("Failed to create framebuffer");
-        }
-    }
 }
 
 void VulkanAppImpl::createCommandPool() {
@@ -1050,7 +794,7 @@ void VulkanAppImpl::createCommandPool() {
 }
 
 void VulkanAppImpl::createCommandBuffers() {
-    commandBuffers.resize(swapchainFramebuffers.size());
+    commandBuffers.resize(swapchainImages.size());
 
     VkCommandBufferAllocateInfo allocInfo{};
     allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
@@ -1064,10 +808,10 @@ void VulkanAppImpl::createCommandBuffers() {
 }
 
 void VulkanAppImpl::initCamera() {
-    cameraPos = {0.0f, 10.0f, 20.0f};
+    cameraPos = {0.0f, 1.5f, 6.0f};
     lastLoggedCameraPos = cameraPos;
-    cameraYaw = 0.0f;
-    cameraPitch = -0.5f;
+    cameraYaw = -1.5707963f;
+    cameraPitch = 0.0f;
     firstMouse = true;
     cameraForward = vnorm({std::cos(cameraPitch) * std::cos(cameraYaw),
                            std::sin(cameraPitch),
@@ -1166,7 +910,7 @@ void VulkanAppImpl::updateCamera(float dt) {
     }
 
     Vec3 delta = vsub(cameraPos, lastLoggedCameraPos);
-    if (vlen(delta) > 0.01f) {
+    if (vlen(delta) > 0.001f) {
         lastLoggedCameraPos = cameraPos;
         std::lock_guard<std::mutex> lock(gLogMutex);
     }
@@ -1311,7 +1055,7 @@ void VulkanAppImpl::drawFrame() {
     recordCommandBuffer(commandBuffers[imageIndex], imageIndex);
 
     VkSemaphore waitSemaphores[] = { imageAvailableSemaphore };
-    VkPipelineStageFlags waitStages[] = { VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT };
+    VkPipelineStageFlags waitStages[] = { VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT };
     VkSemaphore signalSemaphores[] = { renderFinishedSemaphore };
 
     VkSubmitInfo submitInfo{};
