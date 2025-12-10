@@ -52,6 +52,14 @@ add_executable(voxel_engine
   src/core/logging.cpp
   src/render/vulkan/vulkan_debug.cpp
   src/render/vulkan/vulkan_app.cpp
+  src/render/vulkan/app/vulkan_app_impl.cpp
+  src/render/vulkan/core/vk_instance.cpp
+  src/render/vulkan/core/vk_device.cpp
+  src/render/vulkan/core/swapchain.cpp
+  src/render/vulkan/compute/compute_pipeline.cpp
+  src/render/vulkan/compute/compute_commands.cpp
+  src/render/vulkan/camera/camera.cpp
+  src/render/vulkan/sync/sync.cpp
 )
 
 target_include_directories(voxel_engine PRIVATE
