@@ -4,6 +4,7 @@
 #include <set>
 #include <cstring>
 #include <stdexcept>
+#include <cstdint>
 
 static const std::vector<const char*> deviceExtensions = {
     VK_KHR_SWAPCHAIN_EXTENSION_NAME
@@ -71,16 +72,40 @@ bool VulkanAppImpl::isDeviceSuitable(VkPhysicalDevice dev) {
     return indices.isComplete() && extensionsSupported && swapchainAdequate;
 }
 
+uint64_t VulkanAppImpl::rateDevice(VkPhysicalDevice dev) {
+    VkPhysicalDeviceProperties props;
+    vkGetPhysicalDeviceProperties(dev, &props);
+    VkPhysicalDeviceMemoryProperties memProps;
+    vkGetPhysicalDeviceMemoryProperties(dev, &memProps);
+    uint64_t localHeap = 0;
+    for (uint32_t i = 0; i < memProps.memoryHeapCount; ++i) {
+        if (memProps.memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) {
+            if (memProps.memoryHeaps[i].size > localHeap) localHeap = memProps.memoryHeaps[i].size;
+        }
+    }
+    uint64_t typeScore = 0;
+    switch (props.deviceType) {
+        case VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU: typeScore = 3; break;
+        case VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU: typeScore = 2; break;
+        case VK_PHYSICAL_DEVICE_TYPE_VIRTUAL_GPU: typeScore = 1; break;
+        default: typeScore = 0; break;
+    }
+    return (typeScore << 60) | localHeap;
+}
+
 void VulkanAppImpl::pickPhysicalDevice() {
     uint32_t deviceCount = 0;
     vkEnumeratePhysicalDevices(instance, &deviceCount, nullptr);
     if (deviceCount == 0) throw std::runtime_error("No Vulkan devices found");
     std::vector<VkPhysicalDevice> devices(deviceCount);
     vkEnumeratePhysicalDevices(instance, &deviceCount, devices.data());
+    uint64_t bestScore = 0;
     for (const auto& dev : devices) {
-        if (isDeviceSuitable(dev)) {
+        if (!isDeviceSuitable(dev)) continue;
+        uint64_t score = rateDevice(dev);
+        if (score > bestScore) {
+            bestScore = score;
             physicalDevice = dev;
-            break;
         }
     }
     if (!physicalDevice) throw std::runtime_error("No suitable GPU found");

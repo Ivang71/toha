@@ -70,6 +70,7 @@ public:
     void createSurface();
     void pickPhysicalDevice();
     bool isDeviceSuitable(VkPhysicalDevice dev);
+    uint64_t rateDevice(VkPhysicalDevice dev);
     QueueFamilyIndices findQueueFamilies(VkPhysicalDevice dev);
     bool checkDeviceExtensionSupport(VkPhysicalDevice dev);
     SwapchainSupportDetails querySwapchainSupport(VkPhysicalDevice dev);

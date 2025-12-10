@@ -105,9 +105,9 @@ void VulkanAppImpl::updateCamera(float dt) {
     cameraRight = vnorm(vcross(cameraForward, up));
     cameraUp = vcross(cameraRight, cameraForward);
 
-    float speed = 10.0f;
+    float speed = 12.0f;
     if (glfwGetKey(window, GLFW_KEY_LEFT_CONTROL) == GLFW_PRESS) {
-        speed *= 3.0f;
+        speed *= 30.0f;
     }
     float vel = speed * dt;
 
